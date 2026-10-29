@@ -1,0 +1,185 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DEADSLOP</title>
+<style>
+*{box-sizing:border-box}[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:#0a0e15;color:#f2e3bd;font:15px Georgia,serif;overflow:hidden;user-select:none}
+canvas#c{position:fixed;inset:0;width:100%;height:100%}
+.ui{position:fixed;inset:0;pointer-events:none}.ui *{pointer-events:auto}
+.card{background:#0c1119e6;border:1px solid #5a4524;padding:18px 22px;border-radius:6px}
+h1{letter-spacing:.35em;color:#ffb347;margin:0 0 10px}
+button,input{font:inherit;background:#2a1f10;color:#ffd58a;border:1px solid #6b5230;padding:6px 12px;border-radius:3px;cursor:pointer}
+button:hover{background:#3d2d16}button.on{background:#7a5320;color:#fff}input{background:#05080d;color:#fff;cursor:text}
+#menu{display:flex;align-items:center;justify-content:center}#menu .card{text-align:center}
+#lobby{padding:20px;display:grid;grid-template-columns:minmax(300px,1fr) 1fr;gap:14px;align-content:start}
+.teams{display:grid;grid-template-columns:1fr 1fr;gap:10px;white-space:pre-line;min-height:110px}
+.heroes{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+#info{white-space:pre-line;line-height:1.5}
+#top{position:fixed;top:8px;left:0;right:0;text-align:center;font-size:18px;text-shadow:0 0 4px #000}
+#score{position:fixed;top:8px;left:10px;font-size:12px;white-space:pre;line-height:1.4;text-shadow:0 0 3px #000}
+#cross{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font-size:26px;color:#fffc;pointer-events:none}
+#bot{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);text-align:center;pointer-events:none;width:min(520px,90vw)}
+#hpw{height:16px;background:#000a;border:1px solid #000;margin-top:6px}#hpb{height:100%;background:#3bd35a;width:100%}
+#abs{display:flex;gap:8px;justify-content:center}
+.ab{flex:1;background:#0009;border:1px solid #6b5230;padding:4px;font-size:12px;border-radius:3px}.ab.cd{opacity:.45}
+#left{position:fixed;left:12px;bottom:12px;pointer-events:none;text-shadow:0 0 3px #000}
+#souls{font-size:22px;color:#8ff}#items{font-size:12px;max-width:300px}
+#banner{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:56px;color:#ffb347;text-shadow:0 0 10px #000;pointer-events:none}
+#hint{position:fixed;top:58%;left:0;right:0;text-align:center;font-size:20px;text-shadow:0 0 6px #000;pointer-events:none}
+#mm{position:fixed;right:12px;bottom:12px;background:#000a;border:1px solid #5a4524;width:110px;height:220px;pointer-events:none}
+#shop{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);display:grid;grid-template-columns:repeat(3,170px);gap:6px}
+#shop h3{margin:0;color:#ffb347}#shop button{display:block;width:100%;margin:4px 0}
+</style></head><body>
+<canvas id="c"></canvas>
+<div class="ui" id="menu"><div class="card"><h1>DEADSLOP</h1>
+<input id="name" maxlength="16" placeholder="Your name"> <button onclick="connect()">CONNECT</button><p id="status"></p></div></div>
+<div class="ui" id="lobby" hidden>
+<div class="card"><h1>LOBBY</h1><div class="teams"><div id="t0" style="color:#ffa033"></div><div id="t1" style="color:#4d80ff"></div></div>
+<button onclick="send({t:'team',team:0})">Join Amber Hand</button> <button onclick="send({t:'team',team:1})">Join Sapphire Flame</button>
+<div class="heroes" id="heroes"></div><button id="ready" onclick="send({t:'ready'})">READY / START</button>
+<p style="font-size:13px;opacity:.7">Bots fill empty slots (4v4). Pick hero and team, then press READY.</p></div>
+<div class="card" style="align-self:start"><div id="info"></div></div></div>
+<div class="ui" id="hud" hidden>
+<div id="top"></div><div id="score"></div><div id="cross">+</div><canvas id="mm" width="110" height="220"></canvas>
+<div id="left"><div id="souls"></div><div id="items"></div></div>
+<div id="bot"><div id="abs"></div><div id="hpw"><div id="hpb"></div></div><div id="hpt"></div>
+<div style="font-size:11px;opacity:.6;margin-top:3px">WASD move · mouse aim · click shoot · 1-4 abilities · B shop · Esc mouse</div></div>
+<div id="banner"></div><div id="hint">Click to capture the mouse</div>
+<div id="shop" class="card" hidden></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id),clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),PI=Math.PI;
+const hex=c=>(Math.round(c[0]*255)<<16)|(Math.round(c[1]*255)<<8)|Math.round(c[2]*255);
+const dark=(c,k)=>hex(c.map(v=>v*k));
+let D,ws,mode='menu',snap=null,ld=null,pick='Abrams',me=null,yaw=0,pitch=-.1,fire=0,shopOpen=false;
+const keys={w:0,a:0,s:0,d:0},casts=[],nodes={},fxs=[],pnodes=[];
+
+// ---------------- three.js scene
+const R=new THREE.WebGLRenderer({canvas:$('c'),antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));
+const S=new THREE.Scene();S.background=new THREE.Color(0x0a0f17);S.fog=new THREE.FogExp2(0x0a0f17,.006);
+const cam=new THREE.PerspectiveCamera(70,1,.1,500);
+S.add(new THREE.AmbientLight(0x6a7090,1.1));const sun=new THREE.DirectionalLight(0xffd9a0,.9);sun.position.set(-40,90,30);S.add(sun);
+const world=new THREE.Group(),prev=new THREE.Group();S.add(world,prev);
+const M={},mat=c=>M[c]||(M[c]=new THREE.MeshLambertMaterial({color:c}));
+function bx(g,w,h,d,c,x,y,z,r=0,basic){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),basic?new THREE.MeshBasicMaterial({color:c}):mat(c));m.position.set(x,y,z);m.rotation.z=r;g.add(m);return m}
+function sp(g,r,c,x,y,z,basic){const m=new THREE.Mesh(new THREE.SphereGeometry(r,14,10),basic?new THREE.MeshBasicMaterial({color:c}):mat(c));m.position.set(x,y,z);g.add(m);return m}
+function resize(){R.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener('resize',resize);resize();
+
+const STY={helm:[[.26,.26,.14,0,0,.95,'d',0],[.06,.06,.2,-.28,0,.82,'a',0],[.06,.06,.2,.28,0,.82,'a',0]],
+horns:[[.05,.05,.24,-.07,0,1,'a',25],[.05,.05,.24,.07,0,1,'a',-25]],hat:[[.34,.34,.03,0,0,.96,'d',0],[.17,.17,.12,0,0,1.02,'d',0]],
+ears:[[.05,.04,.16,-.07,0,1,'d',0],[.05,.04,.16,.07,0,1,'d',0],[.06,.3,.06,0,-.22,.45,'a',0]],fists:[[.2,.2,.22,-.3,.05,.45,'a',0],[.2,.2,.22,.3,.05,.45,'a',0]],
+wings:[[.5,.04,.26,-.3,-.15,.72,'a',.3],[.5,.04,.26,.3,-.15,.72,'a',-.3]],cape:[[.42,.05,.55,0,-.15,.6,'a',0]],
+visor:[[.22,.1,.05,0,.08,.89,'a',0],[.05,.05,.3,0,0,1.05,'a',0]],crown:[[.04,.04,.1,-.08,0,1,'a',0],[.04,.04,.1,0,0,1.03,'a',0],[.04,.04,.1,.08,0,1,'a',0]],
+tail:[[.07,.35,.07,0,-.22,.42,'a',0],[.3,.3,.2,0,0,.96,'d',0]]};
+function buildHero(n){const d=D.heroes[n],h=d.h,w=d.w,c=hex(d.color),a=hex(d.accent),k=dark(d.color,.35),g=new THREE.Group(),col={c,a,d:k};
+ bx(g,w*.34,h*.46,w*.34,k,-w*.22,h*.23,0);bx(g,w*.34,h*.46,w*.34,k,w*.22,h*.23,0);bx(g,w,h*.36,w*.55,c,0,h*.63,0);
+ bx(g,w*.5,h*.2,w*.1,a,0,h*.66,-w*.28);sp(g,h*.1,0xd8b899,0,h*.88,0);
+ bx(g,w*.25,h*.34,w*.25,c,-w*.65,h*.62,0);bx(g,w*.25,h*.34,w*.25,c,w*.65,h*.62,0);bx(g,w*.12,w*.14,w*.9,0x262630,w*.62,h*.62,-w*.5);
+ for(const [sx,sy,sz,x,y,z,kk,r] of STY[d.style])bx(g,sx*h,sz*h,sy*h,col[kk],x*h,z*h,-y*h,r);return g}
+function buildCreep(t){const g=new THREE.Group(),c=D.teamcol[t];bx(g,1,1.4,.8,dark(c,.45),0,.9,0);sp(g,.4,hex(c),0,1.9,0,1);return g}
+function buildStruct(k,t){const g=new THREE.Group(),c=D.teamcol[t],d=dark(c,.4);
+ if(k=='tower'){bx(g,5,3,5,0x1e1e26,0,1.5,0);bx(g,3,13,3,d,0,9.5,0);sp(g,2,hex(c),0,17,0,1)}
+ else{bx(g,18,6,18,0x1e1e26,0,3,0);bx(g,8,22,8,d,0,17,0);sp(g,5,hex(c),0,32,0,1)}return g}
+function label(t){const c=document.createElement('canvas');c.width=256;c.height=64;const x=c.getContext('2d');x.font='bold 34px Georgia';x.fillStyle='#fff';x.textAlign='center';x.fillText(t,128,44);
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false}));s.scale.set(4,1,1);s.renderOrder=11;return s}
+function bar(g,w,z,c){const mk=(col,cx)=>{const s=new THREE.Sprite(new THREE.SpriteMaterial({color:col,depthTest:false}));s.center.set(cx,.5);s.renderOrder=10;g.add(s);return s};
+ const bg=mk(0x000000,.5);bg.scale.set(w+.1,.3,1);bg.position.y=z;const f=mk(c,0);f.scale.set(w,.22,1);f.position.set(-w/2,z,0);return f}
+
+function buildWorld(){let s=7;const rnd=()=>(s=(s*16807)%2147483647)/2147483647,B=D.base_y;
+ bx(world,170,1,2*B+80,0x161c22,0,-.5,0);
+ for(const lx of D.lanes){bx(world,10,.12,2*B+30,0x52401f,lx,.06,0);
+  for(let y=-120;y<=120;y+=24)for(const sx of[-6.5,6.5]){bx(world,.3,6,.3,0x1a1a1f,lx+sx,3,-y);sp(world,.45,0xffd980,lx+sx,6.2,-y,1)}}
+ for(let i=0;i<150;i++){const x=(rnd()-.5)*160,y=(rnd()-.5)*320;
+  if(Math.min(...D.lanes.map(l=>Math.abs(x-l)))<11||(Math.abs(y)>118&&Math.abs(x)<14))continue;
+  const bh=8+rnd()*26,t=.8+rnd()*.5;bx(world,7+rnd()*7,bh,7+rnd()*7,hex([.16*t,.15*t,.2*t]),x,bh/2,-y);if(rnd()<.5)bx(world,2,1,2,0xffcc66,x,bh+.5,-y,0,1)}
+ for(const sx of[-84,84])bx(world,2,14,2*B+80,0x1a1a20,sx,7,0)}
+function setPreview(){while(prev.children.length)prev.remove(prev.children[0]);const m=buildHero(pick);m.scale.setScalar(1.1);prev.add(m);prev.position.set(2.4,0,0)}
+
+// ---------------- entities / snapshots
+function getNode(id,kind,team,hero,name){let n=nodes[id];if(n){n.seen=1;return n}
+ const g=new THREE.Group(),c=hex(D.teamcol[team]);let m,bw,bz;
+ if(kind=='hero'){m=buildHero(hero);bw=2.6;bz=D.heroes[hero].h+.7;const r=new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,.05,24),new THREE.MeshBasicMaterial({color:c}));r.position.y=.05;g.add(r)}
+ else if(kind=='creep'){m=buildCreep(team);bw=1.6;bz=2.6}else{m=buildStruct(kind,team);bw=kind=='tower'?6:12;bz=kind=='tower'?21:36}
+ g.add(m);const fg=bar(g,bw,bz,c);if(kind=='hero'){const l=label(name);l.position.y=bz+.9;g.add(l)}
+ world.add(g);return nodes[id]={g,m,fg,fw:bw,tx:0,tz:0,th:0,seen:1,init:0,own:kind=='hero'}}
+function put(n,x,y,h,hp,mhp,dead){n.tx=x;n.tz=-y;n.th=h*PI/180;n.fg.scale.x=n.fw*Math.max(.001,hp/Math.max(1,mhp));
+ if(!n.init){n.g.position.set(x,0,-y);n.init=1}n.g.visible=!dead}
+function beam(x1,y1,z1,x2,y2,z2,th,c,life){const a=new THREE.Vector3(x1,y1,z1),b=new THREE.Vector3(x2,y2,z2),L=a.distanceTo(b)||.1;
+ const m=new THREE.Mesh(new THREE.BoxGeometry(th,th,L),new THREE.MeshBasicMaterial({color:c}));m.position.copy(a).add(b).multiplyScalar(.5);m.lookAt(b);world.add(m);fxs.push({m,t:performance.now(),life,k:'l'})}
+function addFx(f){const c=hex(D.teamcol[f[5]??f[4]]);
+ if(f[0]=='boom'){const m=new THREE.Mesh(new THREE.SphereGeometry(1,16,12),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:.5}));m.position.set(f[1],1.2,-f[2]);world.add(m);fxs.push({m,t:performance.now(),life:400,k:'b',r:f[3]})}
+ else beam(f[1],f[0]=='tshot'?8:1.8,-f[2],f[3],1.8,-f[4],f[0]=='beam'?.35:f[0]=='tshot'?.15:.07,c,f[0]=='beam'?250:80)}
+function applySnap(s){for(const k in nodes)nodes[k].seen=0;const y=s.you;me=y.id;
+ for(const r of s.H)put(getNode(r[0],'hero',r[1],r[2],r[3]),r[4],r[5],r[6],r[7],r[8],r[9]);
+ for(const r of s.C)put(getNode(r[0],'creep',r[1]),r[2],r[3],r[6],r[4],r[5],0);
+ for(const r of s.S)put(getNode(r[0],r[2],r[1]),r[3],r[4],r[1]?PI:0,r[5],r[6],0);
+ for(const k in nodes)if(!nodes[k].seen){world.remove(nodes[k].g);delete nodes[k]}
+ s.fx.forEach(addFx);
+ while(pnodes.length<s.P.length){const m=new THREE.Mesh(new THREE.SphereGeometry(.5,10,8),new THREE.MeshBasicMaterial());world.add(m);pnodes.push(m)}
+ pnodes.forEach((m,i)=>{const p=s.P[i];m.visible=!!p;if(p){m.position.set(p[0],1.8,-p[1]);m.material.color.setHex(hex(D.teamcol[p[2]]))}});
+ hud(s)}
+
+// ---------------- HUD
+function hud(s){const y=s.you,h=D.heroes[y.hero];$('hpb').style.width=100*y.hp/Math.max(1,y.maxhp)+'%';
+ $('hpt').textContent=y.hp+' / '+y.maxhp+(y.shield?'  (+'+y.shield+' shield)':'');$('souls').textContent='SOULS '+y.souls;
+ $('items').textContent='Items: '+(y.items.join(', ')||'none (press B)');
+ [...$('abs').children].forEach((e,i)=>{const cd=y.acd[i];e.className='ab'+(cd>0?' cd':'');e.innerHTML=`[${i+1}] ${h.abilities[i].name}<br>${cd>0?cd.toFixed(1)+'s':'READY'}`});
+ const b={};s.S.forEach(r=>{if(r[2]=='base')b[r[1]]=r[5]});
+ $('top').textContent=`${D.teams[0]} patron ${b[0]??0}   ${Math.floor(s.time/60)}:${String(s.time%60).padStart(2,'0')}   ${D.teams[1]} patron ${b[1]??0}`;
+ $('score').textContent=[...s.H].sort((a,b)=>a[1]-b[1]).map(r=>`${r[1]?'S':'A'} ${r[3]} (${r[2]}) ${r[12]}/${r[13]}  ${r[11]}`).join('\n');
+ $('banner').textContent=s.win!=null?D.teams[s.win].toUpperCase()+' WINS':(y.hp<=0&&y.resp>0?'RESPAWN IN '+(Math.floor(y.resp)+1):'');
+ const c=$('mm'),x=c.getContext('2d');x.clearRect(0,0,110,220);
+ const dot=(px,py,t,r,own)=>{x.fillStyle=own?'#fff':'rgb('+D.teamcol[t].map(v=>v*255|0)+')';x.beginPath();x.arc((px+80)/160*110,(150-py)/300*220,r,0,7);x.fill()};
+ s.S.forEach(r=>dot(r[3],r[4],r[1],4));s.C.forEach(r=>dot(r[2],r[3],r[1],1.6));s.H.forEach(r=>{if(!r[9])dot(r[4],r[5],r[1],3,r[0]==y.id)})}
+
+// ---------------- network / lobby
+const send=o=>ws&&ws.readyState==1&&ws.send(JSON.stringify(o));
+function show(m){mode=m;$('menu').hidden=m!='menu';$('lobby').hidden=m!='lobby';$('hud').hidden=m!='game';world.visible=m=='game';prev.visible=m!='game';
+ if(m!='game'){for(const k in nodes){world.remove(nodes[k].g);delete nodes[k]}me=null;snap=null;shopOpen=false;$('shop').hidden=true;document.exitPointerLock()}}
+function connect(){$('status').textContent='Connecting... (free hosting can take about a minute to wake)';
+ ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws');
+ ws.onopen=()=>{send({t:'join',name:$('name').value||'Player'});send({t:'hero',hero:pick});show('lobby')};
+ ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.t=='snap'){snap=m;if(mode=='lobby')show('game')}
+  else if(m.t=='lobby'){ld=m;if(mode=='game'&&m.state=='lobby')show('lobby');refreshLobby()}};
+ ws.onclose=()=>{show('menu');$('status').textContent='Disconnected. Reload the page to retry.'};
+ ws.onerror=()=>{$('status').textContent='Could not connect to the server.'}}
+function refreshLobby(){const l=[[],[]];ld.players.forEach(p=>l[p.team].push(`${p.name} - ${p.hero}${p.ready?'  [READY]':''}`));
+ for(let i=0;i<2;i++)$('t'+i).textContent=D.teams[i].toUpperCase()+'\n'+l[i].join('\n');$('ready').textContent=ld.state=='game'?'JOIN MATCH':'READY / START'}
+function choose(n){pick=n;setPreview();const d=D.heroes[n];
+ $('info').textContent=`${n}\nHP ${d.hp}   Speed ${d.speed}   Gun ${d.gun}\n\n`+d.abilities.map((a,i)=>`${i+1}. ${a.name}  (${a.kind}, ${a.cd}s)`).join('\n');
+ [...$('heroes').children].forEach(b=>b.className=b.textContent==n?'on':'');send({t:'hero',hero:n})}
+
+// ---------------- input
+document.addEventListener('keydown',e=>{if(mode!='game'||e.repeat||e.target.tagName=='INPUT')return;const k=e.key.toLowerCase();
+ if(k in keys)keys[k]=1;else if('1234'.includes(k)&&k&&document.pointerLockElement)casts.push(+k-1);else if(k=='b'){shopOpen=!shopOpen;$('shop').hidden=!shopOpen;if(shopOpen)document.exitPointerLock()}});
+document.addEventListener('keyup',e=>{const k=e.key.toLowerCase();if(k in keys)keys[k]=0});
+document.addEventListener('mousemove',e=>{if(document.pointerLockElement){yaw-=e.movementX*.0025;pitch=clamp(pitch-e.movementY*.0025,-.6,.45)}});
+$('c').addEventListener('mousedown',()=>{if(mode!='game')return;if(!document.pointerLockElement&&!shopOpen)$('c').requestPointerLock();else fire=1});
+document.addEventListener('mouseup',()=>fire=0);
+document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement){fire=0;casts.length=0}});
+setInterval(()=>{if(mode!='game')return;const lk=!!document.pointerLockElement;
+ send({t:'in',mx:keys.d-keys.a,my:keys.w-keys.s,h:((yaw*180/PI)%360+360)%360,fire:!!(fire&&lk),casts:lk?casts.splice(0,4):[]})},33);
+
+// ---------------- main loop
+let last=performance.now();
+function loop(t){requestAnimationFrame(loop);const dt=Math.min(.1,(t-last)/1000);last=t;
+ if(mode!='game'){prev.rotation.y+=dt*.8;cam.position.set(0,2.2,8);cam.lookAt(0,1.4,0)}
+ else{if(snap){applySnap(snap);snap=null}
+  $('hint').hidden=!!document.pointerLockElement||shopOpen;const k=Math.min(1,dt*14);
+  for(const id in nodes){const n=nodes[id],p=n.g.position;p.x+=(n.tx-p.x)*k;p.z+=(n.tz-p.z)*k;
+   const th=id==me?yaw:n.th,d=((th-n.m.rotation.y+PI*3)%(2*PI))-PI;n.m.rotation.y+=d*Math.min(1,dt*18)}
+  for(let i=fxs.length-1;i>=0;i--){const f=fxs[i],fr=(t-f.t)/f.life;if(fr>=1){world.remove(f.m);fxs.splice(i,1);continue}
+   if(f.k=='b'){f.m.scale.setScalar(Math.max(.1,f.r*(.4+.6*fr)));f.m.material.opacity=.55*(1-fr)}}
+  const n=nodes[me];if(n){const o=n.g.position,fx=-Math.sin(yaw),fz=-Math.cos(yaw),rx=Math.cos(yaw),rz=-Math.sin(yaw);
+   cam.position.set(o.x-fx*9.5+rx*1.4,Math.max(1,3.9-pitch*5),o.z-fz*9.5+rz*1.4);
+   cam.lookAt(o.x+fx*20+rx*1.4,1.7+Math.tan(pitch)*20,o.z+fz*20+rz*1.4)}}
+ R.render(S,cam)}
+
+fetch('/data').then(r=>r.json()).then(d=>{D=d;buildWorld();
+ for(const n in D.heroes){const b=document.createElement('button');b.textContent=n;b.onclick=()=>choose(n);$('heroes').appendChild(b)}
+ for(let i=0;i<4;i++)$('abs').appendChild(document.createElement('div'));
+ for(const c of['Weapon','Vitality','Spirit']){const col=document.createElement('div');col.innerHTML=`<h3>${c}</h3>`;
+  for(const n in D.items)if(D.items[n].cat==c){const b=document.createElement('button');b.innerHTML=`${n}<br><small>${D.items[n].cost} souls</small>`;b.onclick=()=>send({t:'buy',item:n});col.appendChild(b)}
+  $('shop').appendChild(col)}
+ choose(pick);show('menu');requestAnimationFrame(loop)});
+</script></body></html>
